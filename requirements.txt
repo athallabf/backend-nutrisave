@@ -1,0 +1,7 @@
+flask
+torch
+torchvision
+timm
+Pillow
+numpy<2.0
+requests
