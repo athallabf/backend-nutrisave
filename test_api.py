@@ -3,7 +3,7 @@ import os
 
 API_URL = "http://127.0.0.1:5000/classify"
 
-IMAGE_PATH = "tomato.png" 
+IMAGE_PATH = "apple.jpg"
 
 if not os.path.exists(IMAGE_PATH):
     print(f"Error: Image file not found at '{IMAGE_PATH}'")

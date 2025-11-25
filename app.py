@@ -1,134 +1,128 @@
 import io
 import os
-import json
 from PIL import Image
+from datetime import datetime, timedelta
+from google import genai
+from google.genai import types
 
 import torch
 import timm
 from flask import Flask, request, jsonify
 from torchvision import transforms
 
+gemini_client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
 
 MODEL_PATH = "best_fruit_veg_model.pth"
-
 IMAGE_SIZE = 256
-
 MODEL_NAME = 'convnext_tiny.in12k_ft_in1k'
-
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 app = Flask(__name__)
 
-
 def create_model(num_classes, pretrained=False):
-    """Creates a ConvNeXt model from the timm library."""
-    # We set pretrained=False because we are loading our own fine-tuned weights.
-    model = timm.create_model(
-        MODEL_NAME,
-        pretrained=pretrained,
-        num_classes=num_classes
-    )
+    model = timm.create_model(MODEL_NAME, pretrained=pretrained, num_classes=num_classes)
     return model
 
 def load_model(model_path):
-    """Loads the trained model, its weights, and class names."""
-    if not os.path.exists(model_path):
-        raise FileNotFoundError(f"Model file not found at {model_path}")
-
     checkpoint = torch.load(model_path, map_location=DEVICE)
-    
     class_names = checkpoint.get('class_names')
     if not class_names:
-        raise KeyError("Could not find 'class_names' in the model checkpoint.")
-    
+        raise KeyError("Could not find 'class_names' in checkpoint")
     num_classes = len(class_names)
-    
     model = create_model(num_classes=num_classes)
-    
     state_dict = checkpoint['model_state_dict']
-    new_state_dict = {k.replace('module.', ''): v for k, v in state_dict.items()}
-    
-    model.load_state_dict(new_state_dict)
-    
+    state_dict = {k.replace('module.', ''): v for k,v in state_dict.items()}
+    model.load_state_dict(state_dict)
     model.eval()
-    
-    model = model.to(DEVICE)
-    
-    print(f"Model loaded successfully and moved to {DEVICE}.")
-    print(f"Found {num_classes} classes.")
-    
+    model.to(DEVICE)
+    print(f"Model loaded on {DEVICE} with {num_classes} classes.")
     return model, class_names
 
 try:
     model, class_names = load_model(MODEL_PATH)
 except Exception as e:
-    print(f"CRITICAL ERROR: Could not load the model.")
-    print(f"Details: {e}")
+    print(f"Failed to load model: {e}")
     model = None
     class_names = None
 
-
 def prepare_image(image_bytes):
-    """
-    Prepares a raw image bytes for model prediction.
-    - Resizes the image to the target size.
-    - Converts it to a PyTorch Tensor.
-    - Normalizes pixel values using ImageNet stats.
-    - Adds a batch dimension.
-    """
-
     transform = transforms.Compose([
         transforms.Resize((IMAGE_SIZE, IMAGE_SIZE)),
         transforms.ToTensor(),
-        transforms.Normalize(
-            mean=[0.485, 0.456, 0.406],
-            std=[0.229, 0.224, 0.225]
-        )
+        transforms.Normalize(mean=[0.485,0.456,0.406], std=[0.229,0.224,0.225])
     ])
-    
     image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
-    image_tensor = transform(image).unsqueeze(0) # Add batch dimension
-    return image_tensor
+    return transform(image).unsqueeze(0)
 
+def estimate_condition(image_bytes):
+    """Estimate condition based on average brightness + color variance for more variation"""
+    image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+    gray = image.convert("L")
+    brightness = sum(gray.getdata()) / (image.width * image.height)
+    
+    pixels = list(image.getdata())
+    avg_r = sum([p[0] for p in pixels])/len(pixels)
+    avg_g = sum([p[1] for p in pixels])/len(pixels)
+    avg_b = sum([p[2] for p in pixels])/len(pixels)
+    variance = (abs(avg_r-avg_g) + abs(avg_r-avg_b) + abs(avg_g-avg_b))/3
 
+    if brightness > 150 and variance > 20:
+        return "fresh"
+    elif brightness > 120:
+        return "ripe"
+    elif brightness > 80:
+        return "overripe"
+    else:
+        return "rotten"
+
+def get_expiry_from_gemini(image_bytes, fruit_name):
+    today = datetime.today().strftime("%Y-%m-%d")
+    condition = estimate_condition(image_bytes)
+    prompt_text = (
+        f"Today is {today}. Estimate a reasonable expiry date (YYYY-MM-DD) "
+        f"for '{fruit_name}' in '{condition}' condition. "
+        "Based on the image provided. Respond only with the date."
+    )
+    try:
+        img_format = Image.open(io.BytesIO(image_bytes)).format.lower()
+        mime_type = f"image/{img_format if img_format in ['jpeg','png'] else 'jpeg'}"
+        image_part = types.Part.from_bytes(data=image_bytes, mime_type=mime_type)
+        response = gemini_client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=[prompt_text, image_part]
+        )
+        return response.text.strip()
+    except Exception as e:
+        print(f"Gemini error: {e}")
+        return (datetime.now() + timedelta(days=7)).strftime("%Y-%m-%d")
 
 @app.route("/classify", methods=["POST"])
 def classify_image():
-    """
-    Receives an image, passes it to the model, and returns
-    the predicted label as JSON.
-    """
     if not model or not class_names:
-        return jsonify({"error": "Server error: Model is not loaded."}), 500
-
+        return jsonify({"error": "Model not loaded"}), 500
     if 'image' not in request.files:
-        return jsonify({"error": "No 'image' file provided in the request."}), 400
-
+        return jsonify({"error": "No image provided"}), 400
     image_file = request.files['image']
     if image_file.filename == '':
-        return jsonify({"error": "No image file selected."}), 400
-
+        return jsonify({"error": "No image selected"}), 400
     try:
         image_bytes = image_file.read()
-        processed_image = prepare_image(image_bytes).to(DEVICE)
-        
-        with torch.no_grad(): 
-            output = model(processed_image)
-            probabilities = torch.nn.functional.softmax(output[0], dim=0)
-            predicted_idx = torch.argmax(probabilities).item()
+        processed = prepare_image(image_bytes).to(DEVICE)
+        with torch.no_grad():
+            output = model(processed)
+            probs = torch.nn.functional.softmax(output[0], dim=0)
+            pred_idx = torch.argmax(probs).item()
+        predicted_label = class_names[pred_idx]
 
-        predicted_label = class_names[predicted_idx]
+        expiry_date = get_expiry_from_gemini(image_bytes, predicted_label)
 
-        response = {
-            "label": predicted_label
-        }
-        
-        return jsonify(response)
-
+        return jsonify({
+            "label": predicted_label,
+            "expiryDate": expiry_date
+        })
     except Exception as e:
-        print(f"ERROR during classification: {e}")
-        return jsonify({"error": f"An error occurred during classification: {e}"}), 500
-
+        print(f"Error: {e}")
+        return jsonify({"error": str(e)}), 500
 
 if __name__ == "__main__":
     app.run(host='0.0.0.0', port=5000, debug=True)
