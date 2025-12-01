@@ -7,6 +7,7 @@ from google.genai import types
 
 import torch
 import timm
+from flask_cors import CORS
 from flask import Flask, request, jsonify
 from torchvision import transforms
 
@@ -18,6 +19,7 @@ MODEL_NAME = 'convnext_tiny.in12k_ft_in1k'
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 app = Flask(__name__)
+CORS(app)
 
 def create_model(num_classes, pretrained=False):
     model = timm.create_model(MODEL_NAME, pretrained=pretrained, num_classes=num_classes)
