@@ -11,6 +11,9 @@ from flask_cors import CORS
 from flask import Flask, request, jsonify
 from torchvision import transforms
 
+from dotenv import load_dotenv
+load_dotenv()
+
 gemini_client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
 
 MODEL_PATH = "best_fruit_veg_model.pth"

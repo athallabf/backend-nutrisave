@@ -7,3 +7,5 @@ numpy<2.0
 requests
 gunicorn
 google-genai
+flask_cors
+dotenv
