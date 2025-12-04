@@ -81,10 +81,18 @@ def get_tips_from_gemini(image_bytes, fruit_name):
     condition = estimate_condition(image_bytes)
     prompt_text = (
         f"Berdasarkan gambar {fruit_name} dengan kondisi '{condition}', "
-        "berikan 3 tips singkat terkait PENYIMPANAN saja. "
-        "Jangan berikan tips konsumsi, cara makan, atau hal-hal yang tidak relevan "
-        "seperti menjaga agar buah tidak terbentur. "
-        "Jawab dalam 3 poin bernomor (1, 2, 3) dengan kalimat langsung."
+        "berikan 3 tips singkat yang hanya fokus pada penyimpanan buah, "
+        "kecuali jika kondisinya 'rotten'.\n\n"
+        "Jika kondisinya 'rotten':"
+        "- Jangan berikan tips penyimpanan."
+        "- Jangan menyarankan untuk menyimpan buah busuk."
+        "- Namun berikan tips untuk membuang atau mengelola buah busuk dengan benar.\n\n"
+        "Jika kondisinya bukan 'rotten':"
+        "- Berikan 3 tips singkat khusus penyimpanan."
+        "- Jangan berikan tips konsumsi, cara memilih, rasa, atau hal lain yang tidak relevan."
+        "- Jangan gunakan label seperti 'Penyimpanan:' atau 'Cara Memilih:'."
+        "- Tulis dalam poin 1., 2., dan 3.\n\n"
+        "Jawab hanya sesuai aturan di atas."
     )
 
     try:
