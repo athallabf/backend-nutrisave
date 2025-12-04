@@ -4,14 +4,15 @@ from PIL import Image
 from datetime import datetime, timedelta
 from google import genai
 from google.genai import types
+from dotenv import load_dotenv
 
 import torch
 import timm
-from flask_cors import CORS
 from flask import Flask, request, jsonify
 from torchvision import transforms
 
-gemini_client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
+load_dotenv()
+gemini_client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
 
 MODEL_PATH = "best_fruit_veg_model.pth"
 IMAGE_SIZE = 256
@@ -19,7 +20,6 @@ MODEL_NAME = 'convnext_tiny.in12k_ft_in1k'
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 app = Flask(__name__)
-CORS(app)
 
 def create_model(num_classes, pretrained=False):
     model = timm.create_model(MODEL_NAME, pretrained=pretrained, num_classes=num_classes)
@@ -76,14 +76,53 @@ def estimate_condition(image_bytes):
         return "overripe"
     else:
         return "rotten"
+    
+def get_tips_from_gemini(image_bytes, fruit_name):
+    condition = estimate_condition(image_bytes)
+    prompt_text = (
+        f"Berdasarkan gambar {fruit_name} dengan kondisi '{condition}', "
+        "berikan 3 tips singkat terkait PENYIMPANAN saja. "
+        "Jangan berikan tips konsumsi, cara makan, atau hal-hal yang tidak relevan "
+        "seperti menjaga agar buah tidak terbentur. "
+        "Jawab dalam 3 poin bernomor (1, 2, 3) dengan kalimat langsung."
+    )
+
+    try:
+        img_format = Image.open(io.BytesIO(image_bytes)).format.lower()
+        mime_type = f"image/{img_format if img_format in ['jpeg','png'] else 'jpeg'}"
+        image_part = types.Part.from_bytes(data=image_bytes, mime_type=mime_type)
+
+        response = gemini_client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=[prompt_text, image_part]
+        )
+
+        raw_text = response.text.strip()
+
+        tips = []
+        for line in raw_text.split('\n'):
+            line = line.strip()
+            if line and (line[0].isdigit() and line[1] == '.' or line[0] in ['-', '*']):
+                tip = line[line.index('.')+1:].strip() if '.' in line else line[1:].strip()
+                tips.append(tip)
+
+        return tips 
+    except Exception as e:
+        print(f"Gemini tips error: {e}")
+        return "Unable to generate tips."
 
 def get_expiry_from_gemini(image_bytes, fruit_name):
     today = datetime.today().strftime("%Y-%m-%d")
     condition = estimate_condition(image_bytes)
     prompt_text = (
-        f"Today is {today}. Estimate a reasonable expiry date (YYYY-MM-DD) "
-        f"for '{fruit_name}' in '{condition}' condition. "
-        "Based on the image provided. Respond only with the date."
+        f"Today is {today}. Based on the image and the detected fruit '{fruit_name}' "
+        f"in '{condition}' condition, estimate the expiry date strictly using the rules below:\n\n"
+        "- fresh: 5–7 days from today\n"
+        "- ripe: 3–5 days from today\n"
+        "- overripe: 1–2 days from today\n"
+        "- rotten: already expired, return today's date\n\n"
+        "Use ONLY the ranges above. Choose one reasonable date inside the correct range.\n"
+        "Output only the date in YYYY-MM-DD format with no explanation."
     )
     try:
         img_format = Image.open(io.BytesIO(image_bytes)).format.lower()
@@ -117,10 +156,13 @@ def classify_image():
         predicted_label = class_names[pred_idx]
 
         expiry_date = get_expiry_from_gemini(image_bytes, predicted_label)
+        tips = get_tips_from_gemini(image_bytes, predicted_label)
 
         return jsonify({
             "label": predicted_label,
-            "expiryDate": expiry_date
+            "expiryDate": expiry_date,
+            "tips": tips
+
         })
     except Exception as e:
         print(f"Error: {e}")
