@@ -197,5 +197,37 @@ def classify_image():
 def get_items():
     return jsonify(items)
 
+@app.route("/suggest-recipes", methods=["POST"])
+def suggest_recipes():
+    data = request.json
+    ingredients = data.get("ingredients", [])
+
+    if not ingredients:
+        return jsonify({"error": "No ingredients provided"}), 400
+
+    ingredients_str = ", ".join(ingredients)
+    prompt_text = (
+        f"Saya punya bahan-bahan berikut: {ingredients_str}. "
+        "Buatkan 3 saran resep masakan Indonesia sederhana yang bisa dibuat menggunakan bahan utama tersebut. "
+        "Prioritaskan bahan yang mungkin cepat busuk. "
+        "Berikan output HANYA dalam format JSON valid (tanpa markdown ```json) dengan struktur: "
+        "[{'title': 'Nama Masakan', 'missingIngredients': ['Bahan lain yg perlu dibeli'], 'steps': ['Langkah 1', 'Langkah 2']}]"
+    )
+
+    try:
+        response = gemini_client.models.generate_content(
+            model="gemini-2.0-flash",
+            contents=[prompt_text],
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json"
+            )
+        )
+        recipes = json.loads(response.text)
+        return jsonify(recipes)
+
+    except Exception as e:
+        print("Recipe Gen Error:", e)
+        return jsonify({"error": str(e)}), 500
+
 if __name__ == "__main__":
     app.run(host='0.0.0.0', port=5000, debug=True)
